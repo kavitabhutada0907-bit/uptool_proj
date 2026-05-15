@@ -413,25 +413,36 @@ def generate_with_prices(rfq_id: int, extra_prices: dict):
         
 @app.post("/quotes/{quote_id}/send")
 def send_quote_route(quote_id: int):
-    quotes = load_json(QUOTES_FILE)
-    quote  = next((q for q in quotes if q['id'] == quote_id), None)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+    try:
+        quotes = load_json(QUOTES_FILE)
+        quote  = next((q for q in quotes if q['id'] == quote_id), None)
+        if not quote:
+            raise HTTPException(status_code=404, detail="Quote not found")
 
-    enriched           = quote.get('items', [])
-    unavailable_items  = quote.get('unavailable_items', [])
-    quotation_file     = generate_csv(enriched, unavailable_items=unavailable_items)
+        enriched          = quote.get('items', [])
+        unavailable_items = quote.get('unavailable_items', [])
 
-    send_email(quote['recipient'], quotation_file, unavailable_items=unavailable_items)
+        print(f"📤 Sending quote to: {quote['recipient']}")
+        print(f"📧 GMAIL_ADDRESS: {GMAIL_ADDRESS}")
+        print(f"📧 GMAIL_PASSWORD set: {'YES' if GMAIL_PASSWORD else 'NO'}")
 
-    quotes = [{**q, 'status': 'sent'} if q['id'] == quote_id else q for q in quotes]
-    save_json(QUOTES_FILE, quotes)
+        quotation_file = generate_csv(enriched, unavailable_items=unavailable_items)
+        send_email(quote['recipient'], quotation_file, unavailable_items=unavailable_items)
 
-    rfqs = load_json(RFQS_FILE)
-    rfqs = [{**r, 'status': 'sent'} if r['id'] == quote.get('rfq_id') else r for r in rfqs]
-    save_json(RFQS_FILE, rfqs)
+        quotes = [{**q, 'status': 'sent'} if q['id'] == quote_id else q for q in quotes]
+        save_json(QUOTES_FILE, quotes)
 
-    return {"status": "sent"} 
+        rfqs = load_json(RFQS_FILE)
+        rfqs = [{**r, 'status': 'sent'} if r['id'] == quote.get('rfq_id') else r for r in rfqs]
+        save_json(RFQS_FILE, rfqs)
+
+        return {"status": "sent"}
+    except Exception as e:
+        print(f"❌ Send quote error: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+        
 @app.get("/parts")
 def get_parts():
     try:
