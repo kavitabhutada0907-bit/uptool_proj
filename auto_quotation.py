@@ -262,10 +262,7 @@ def generate_csv(enriched_items, output_file='quotation.csv', unavailable_items=
     return output_file 
 # ── 7. Send email ─────────────────────────────────────────────
 def send_email(to_address, csv_file, unavailable_items=None):
-    msg            = MIMEMultipart()
-    msg['From']    = GMAIL_ADDRESS
-    msg['To']      = to_address
-    msg['Subject'] = "Quotation - Price Details"
+    service = authenticate()
 
     # Build unavailable items text
     unavailable_text = ""
@@ -273,7 +270,7 @@ def send_email(to_address, csv_file, unavailable_items=None):
         unavailable_text = "\n\nPlease note the following items are currently NOT AVAILABLE:\n"
         for item in unavailable_items:
             unavailable_text += f"  • {item['name']} (Qty: {item['quantity']})\n"
-        unavailable_text += "\nWe apologize for the inconvenience. Please contact us for alternatives or updated availability."
+        unavailable_text += "\nWe apologize for the inconvenience. Please contact us for alternatives."
 
     body = f"""Dear Sir/Madam,
 
@@ -283,8 +280,14 @@ Should you have any questions, feel free to reach out.
 
 Best regards"""
 
+    # Build email message
+    msg            = MIMEMultipart()
+    msg['From']    = GMAIL_ADDRESS
+    msg['To']      = to_address
+    msg['Subject'] = "Quotation - Price Details"
     msg.attach(MIMEText(body, 'plain'))
 
+    # Attach CSV
     with open(csv_file, 'rb') as f:
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(f.read())
@@ -293,11 +296,15 @@ Best regards"""
                         f'attachment; filename={os.path.basename(csv_file)}')
         msg.attach(part)
 
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        server.login(GMAIL_ADDRESS, GMAIL_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, to_address, msg.as_string())
+    # Send via Gmail API instead of SMTP
+    raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+    service.users().messages().send(
+        userId='me',
+        body={'raw': raw_message}
+    ).execute()
 
-    print(f"✅ Quotation emailed to : {to_address}") 
+    print(f"✅ Quotation emailed to : {to_address}")
+    
 # ── API Routes ────────────────────────────────────────────────
  
 @app.get("/health")
