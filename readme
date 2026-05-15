@@ -1,0 +1,12 @@
+# UpTool - AI Quoting System
+
+## Setup
+1. Clone repo
+2. Add `.env` file with DB and Gmail credentials
+3. Add `credentials.json` and `token.json` from Google Cloud
+4. Install backend: `pip install -r requirements.txt`
+5. Install frontend: `cd quoting-frontend && npm install`
+
+## Run
+- Backend: `python -m uvicorn auto_quotation:app --reload`
+- Frontend: `cd quoting-frontend && npm run dev`
