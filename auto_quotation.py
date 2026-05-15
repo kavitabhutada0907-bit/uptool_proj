@@ -43,15 +43,67 @@ DB_CONFIG = {
 RFQS_FILE   = 'rfqs.json'
 QUOTES_FILE = 'quotes.json'
  
-def load_json(file):
-    if not os.path.exists(file):
-        return []
-    with open(file) as f:
-        return json.load(f)
- 
-def save_json(file, data):
-    with open(file, 'w') as f:
-        json.dump(data, f, indent=2)
+def get_all_rfqs():
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM rfqs")
+    rows   = cursor.fetchall()
+    cursor.close(); conn.close()
+    for row in rows:
+        row['items'] = json.loads(row['items']) if row['items'] else []
+    return rows
+
+def save_rfq(rfq):
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO rfqs (sender, sender_email, subject, items, parts_count, status, date) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (rfq['sender'], rfq['sender_email'], rfq['subject'],
+         json.dumps(rfq['items']), rfq['parts_count'], rfq['status'], rfq['date'])
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    cursor.close(); conn.close()
+    return new_id
+
+def update_rfq_status(rfq_id, status):
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE rfqs SET status=%s WHERE id=%s", (status, rfq_id))
+    conn.commit()
+    cursor.close(); conn.close()
+
+def get_all_quotes():
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM quotes")
+    rows   = cursor.fetchall()
+    cursor.close(); conn.close()
+    for row in rows:
+        row['items']             = json.loads(row['items']) if row['items'] else []
+        row['unavailable_items'] = json.loads(row['unavailable_items']) if row['unavailable_items'] else []
+    return rows
+
+def save_quote(quote):
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO quotes (rfq_id, recipient, items, unavailable_items, grand_total, status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (quote['rfq_id'], quote['recipient'], json.dumps(quote['items']),
+         json.dumps(quote.get('unavailable_items', [])),
+         quote['grand_total'], quote['status'], quote['created_at'])
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    cursor.close(); conn.close()
+    return new_id
+
+def update_quote_status(quote_id, status):
+    conn   = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE quotes SET status=%s WHERE id=%s", (status, quote_id))
+    conn.commit()
+    cursor.close(); conn.close()
  
 # ── FastAPI app ───────────────────────────────────────────────
 app = FastAPI()
@@ -267,14 +319,12 @@ def fetch_emails():
     try:
         service  = authenticate()
         messages = get_new_quotation_emails(service)
-        rfqs     = load_json(RFQS_FILE)
         count    = 0
         for msg in messages:
             sender, csv_path = process_email(service, msg['id'])
             if csv_path and sender:
                 items = read_csv(csv_path)
                 rfq   = {
-                    'id':          len(rfqs) + 1,
                     'sender':      sender,
                     'sender_email':sender,
                     'subject':     'Quotation Request',
@@ -283,13 +333,13 @@ def fetch_emails():
                     'status':      'new',
                     'date':        str(date.today())
                 }
-                rfqs.append(rfq)
-                save_json(RFQS_FILE, rfqs)
+                save_rfq(rfq)
                 count += 1
         return {"new_emails": count}
     except Exception as e:
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
  
 @app.post("/mail/fetch/debug")
 def fetch_emails_debug():
@@ -302,43 +352,39 @@ def fetch_emails_debug():
  
 @app.get("/rfqs")
 def get_rfqs():
-    return load_json(RFQS_FILE)
- 
+    return get_all_rfqs()
+
 @app.get("/rfqs/{rfq_id}")
 def get_rfq(rfq_id: int):
-    rfqs = load_json(RFQS_FILE)
+    rfqs = get_all_rfqs()
     rfq  = next((r for r in rfqs if r['id'] == rfq_id), None)
     if not rfq:
         raise HTTPException(status_code=404, detail="RFQ not found")
     return rfq
- 
+
 @app.get("/quotes")
 def get_quotes():
-    return load_json(QUOTES_FILE)
- 
+    return get_all_quotes()
+
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: int):
-    quotes = load_json(QUOTES_FILE)
+    quotes = get_all_quotes()
     quote  = next((q for q in quotes if q['id'] == quote_id), None)
     if not quote:
         raise HTTPException(status_code=404, detail="Quote not found")
     return quote
- 
+
+
 @app.post("/quotes/generate/{rfq_id}")
 def generate_quote_route(rfq_id: int):
-    rfqs = load_json(RFQS_FILE)
+    rfqs = get_all_rfqs()
     rfq  = next((r for r in rfqs if r['id'] == rfq_id), None)
     if not rfq:
         raise HTTPException(status_code=404, detail="RFQ not found")
-    
     items    = rfq.get('items', [])
     enriched = fetch_prices(items)
-    
-    # Find missing items
-    found_names  = {i['name'] for i in enriched}
+    found_names   = {i['name'] for i in enriched}
     missing_items = [i for i in items if i['name'] not in found_names]
-    
-    # If there are missing items, return them instead of generating
     if missing_items:
         return {
             "status":        "missing_items",
@@ -346,66 +392,50 @@ def generate_quote_route(rfq_id: int):
             "found_items":   enriched,
             "rfq_id":        rfq_id
         }
-    
-    # All items found — generate quote normally
-    quotes   = load_json(QUOTES_FILE)
-    quote_id = len(quotes) + 1
-    quote    = {
-        'id':          quote_id,
-        'rfq_id':      rfq_id,
-        'recipient':   rfq.get('sender'),
-        'items':       enriched,
-        'grand_total': sum(i['total'] for i in enriched),
-        'status':      'pending',
-        'created_at':  str(date.today())
+    quote = {
+        'rfq_id':            rfq_id,
+        'recipient':         rfq.get('sender'),
+        'items':             enriched,
+        'unavailable_items': [],
+        'grand_total':       sum(i['total'] for i in enriched),
+        'status':            'pending',
+        'created_at':        str(date.today())
     }
-    quotes.append(quote)
-    save_json(QUOTES_FILE, quotes)
-    rfqs = [{**r, 'status': 'pending'} if r['id'] == rfq_id else r for r in rfqs]
-    save_json(RFQS_FILE, rfqs)
-    return {"status": "ok", **quote}
+    new_id = save_quote(quote)
+    update_rfq_status(rfq_id, 'pending')
+    return {"status": "ok", "id": new_id, **quote}
+
 
 @app.post("/quotes/generate/{rfq_id}/with-prices")
 def generate_with_prices(rfq_id: int, extra_prices: dict):
     try:
-        # Add missing parts to DB (only ones with prices)
         conn   = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
         for part in extra_prices.get("prices", []):
             cursor.execute(
-                "INSERT INTO manufacturing_parts (name, price, modified_date) VALUES (%s, %s, %s)",
+                "INSERT INTO manufacturing_parts (name, price, modified_date) VALUES (%s,%s,%s)",
                 (part['name'], part['price'], date.today())
             )
         conn.commit()
-        cursor.close()
-        conn.close()
-
-        rfqs     = load_json(RFQS_FILE)
+        cursor.close(); conn.close()
+        rfqs     = get_all_rfqs()
         rfq      = next((r for r in rfqs if r['id'] == rfq_id), None)
         items    = rfq.get('items', [])
         enriched = fetch_prices(items)
-
-        # Items still not found after adding prices = unavailable
         found_names       = {i['name'] for i in enriched}
         unavailable_items = [i for i in items if i['name'] not in found_names]
-
-        quotes   = load_json(QUOTES_FILE)
-        quote_id = len(quotes) + 1
-        quote    = {
-            'id':                quote_id,
+        quote = {
             'rfq_id':            rfq_id,
             'recipient':         rfq.get('sender'),
             'items':             enriched,
-            'unavailable_items': unavailable_items,   # ← saved here
+            'unavailable_items': unavailable_items,
             'grand_total':       sum(i['total'] for i in enriched),
             'status':            'pending',
             'created_at':        str(date.today())
         }
-        quotes.append(quote)
-        save_json(QUOTES_FILE, quotes)
-        rfqs = [{**r, 'status': 'pending'} if r['id'] == rfq_id else r for r in rfqs]
-        save_json(RFQS_FILE, rfqs)
-        return {"status": "ok", **quote}
+        new_id = save_quote(quote)
+        update_rfq_status(rfq_id, 'pending')
+        return {"status": "ok", "id": new_id, **quote}
     except Exception as e:
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -414,35 +444,22 @@ def generate_with_prices(rfq_id: int, extra_prices: dict):
 @app.post("/quotes/{quote_id}/send")
 def send_quote_route(quote_id: int):
     try:
-        quotes = load_json(QUOTES_FILE)
+        quotes = get_all_quotes()
         quote  = next((q for q in quotes if q['id'] == quote_id), None)
         if not quote:
             raise HTTPException(status_code=404, detail="Quote not found")
-
         enriched          = quote.get('items', [])
         unavailable_items = quote.get('unavailable_items', [])
-
-        print(f"📤 Sending quote to: {quote['recipient']}")
-        print(f"📧 GMAIL_ADDRESS: {GMAIL_ADDRESS}")
-        print(f"📧 GMAIL_PASSWORD set: {'YES' if GMAIL_PASSWORD else 'NO'}")
-
-        quotation_file = generate_csv(enriched, unavailable_items=unavailable_items)
+        quotation_file    = generate_csv(enriched, unavailable_items=unavailable_items)
         send_email(quote['recipient'], quotation_file, unavailable_items=unavailable_items)
-
-        quotes = [{**q, 'status': 'sent'} if q['id'] == quote_id else q for q in quotes]
-        save_json(QUOTES_FILE, quotes)
-
-        rfqs = load_json(RFQS_FILE)
-        rfqs = [{**r, 'status': 'sent'} if r['id'] == quote.get('rfq_id') else r for r in rfqs]
-        save_json(RFQS_FILE, rfqs)
-
+        update_quote_status(quote_id, 'sent')
+        update_rfq_status(quote['rfq_id'], 'sent')
         return {"status": "sent"}
     except Exception as e:
-        print(f"❌ Send quote error: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-        
+
 @app.get("/parts")
 def get_parts():
     try:
@@ -510,8 +527,8 @@ def delete_part(part_id: int):
  
 @app.get("/stats")
 def get_stats():
-    rfqs   = load_json(RFQS_FILE)
-    quotes = load_json(QUOTES_FILE)
+    rfqs   = get_all_rfqs()
+    quotes = get_all_quotes()
     return {
         "total_rfqs":  len(rfqs),
         "quotes_sent": len([q for q in quotes if q['status'] == 'sent']),
@@ -528,13 +545,11 @@ def background_watcher():
             messages = get_new_quotation_emails(service)
             if messages:
                 print(f"📬 Auto-fetch: {len(messages)} new email(s)")
-                rfqs = load_json(RFQS_FILE)
                 for msg in messages:
                     sender, csv_path = process_email(service, msg['id'])
                     if csv_path and sender:
                         items = read_csv(csv_path)
                         rfq   = {
-                            'id':          len(rfqs) + 1,
                             'sender':      sender,
                             'sender_email':sender,
                             'subject':     'Quotation Request',
@@ -543,12 +558,12 @@ def background_watcher():
                             'status':      'new',
                             'date':        str(date.today())
                         }
-                        rfqs.append(rfq)
-                        save_json(RFQS_FILE, rfqs)
+                        save_rfq(rfq)
             else:
                 print(f"⏳ Auto-fetch: no new emails")
         except Exception as e:
             print(f"❌ Watcher error: {e}")
+            print(traceback.format_exc())
         time.sleep(CHECK_INTERVAL)
          
 @app.on_event("startup")
