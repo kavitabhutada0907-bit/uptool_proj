@@ -58,7 +58,11 @@ app = FastAPI()
  
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://uptool-proj-hl8kk77pt-kavita-bhutada-s-projects.vercel.app",
+        "https://*.vercel.app",  # covers all vercel preview URLs
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
